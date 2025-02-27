@@ -1,0 +1,361 @@
+---
+title: "Linked Emulator"
+author: "Joey Lyon"
+date: "2025-02-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r Emulator Functions}
+#source all function files - see bottom of file for more information on all of the functions
+source("C:/Users/jl541227/Documents/ResearchPapers/Richards_Joey2/Richards_Joey/linkedEmulatorPackage/linkedEmulator/R/fPrediction.R")
+###
+source("C:/Users/jl541227/Documents/ResearchPapers/Richards_Joey2/Richards_Joey/linkedEmulatorPackage/linkedEmulator/R/gPrediction.R")
+###
+source("C:/Users/jl541227/Documents/ResearchPapers/Richards_Joey2/Richards_Joey/linkedEmulatorPackage/linkedEmulator/R/linkedSampling.R")
+###
+source("C:/Users/jl541227/Documents/ResearchPapers/Richards_Joey2/Richards_Joey/linkedEmulatorPackage/linkedEmulator/R/linkedEmulatorCaseFunctions.R")
+###
+source("C:/Users/jl541227/Documents/ResearchPapers/Richards_Joey2/Richards_Joey/linkedEmulatorPackage/linkedEmulator/R/buildModels.R")
+###
+source("C:/Users/jl541227/Documents/ResearchPapers/Richards_Joey2/Richards_Joey/linkedEmulatorPackage/linkedEmulator/R/linkedEmulator.R")
+
+```
+
+In this example, we are using the following 4 toy functions as the functions of interest for generating our output:
+$$w_1 = f_1(x_1, x_2) = \sin(x_1) + x_2^2$$
+$$w_2 = f_2(x_1, x_2) = \sin(3x_1 \cos(\pi x_2))$$
+$$g_1(w_1, w_2, z_1, z_2) = \cos(3z_2)\sin(3w_1) + \sin(3z_1)\cos(3w_2)$$
+
+$$g_2(w_1, w_2, z_1, z_2) = \cos(4z_2)\sin(2w_1) + \sin(4z_1)\cos(2w_2)$$
+
+```{r Toy functions}
+f_1 <- function(x1, x2) {
+  return (sin(x1) + x2^2)
+}
+
+f_2 <- function(x1, x2) {
+  return (sin(3*x1*cos(pi*x2)))
+}
+
+g_1 <- function(w1, w2, z1, z2) {
+  return (cos(3*z2)*sin(3*w1) + sin(3*z1)*cos(3*w2))
+}
+
+g_2 <- function(w1, w2, z1, z2) {
+  return (cos(4*z2)*sin(2*w1) + sin(4*z1)*cos(2*w2))
+}
+
+```
+
+For the training data for this problem, we vary the values $x_1, x_2, z_1, z_2$ between 0 and 2. When running the emulator, we hold three of the variables $(x_2, z_1, z_2)$ constant around 1 and vary the other $(x_1)$ on a grid from 0 to 2. \
+\ 
+When generating or importing data, the organization of the data is important. In order for this setup to work, the data must be organized as follows: \
+**Inputs:** Rows correspond to distinct parameter sets, columns correspond to different input parameters. \
+**Outputs:** Rows correspond to distinct parameter sets, columns correspond to different output parameters. 
+
+
+```{r Data Generation}
+#load other necessary packages (RobustGaSP, readxl, etc.)
+library(lhs)
+library(RobustGaSP)
+library(readxl)
+library(pracma) #needed for blkdiag
+library(psych) #needed for tr
+
+#load/generate data
+set.seed(9)
+N = 201 #number of testing locations
+m = 300 #number of training inputs
+
+#generate m x1 values between 0 and 2
+x1=randomLHS(m,1) 
+x1 = x1*2
+
+#generate m x2 values between 0 and 2
+x2=randomLHS(m,1)
+x2 = x2*2
+
+#calculate w1 = f_1(x1, x2) and w2 = f_2(x1,x2) values 
+w1=f_1(x1, x2)
+w2=f_2(x1, x2)
+fLocs <- cbind(x1, x2)
+
+#create grid of length N from 0 to 2 for x1* (untested inputs)
+xx1 = seq(0,2, length.out = N)
+xx2 <- rep(1, times = N)
+
+#x2* will be held constant at 1 so we can investigate on dimension
+xx2 = xx2 + (runif(N)*(10^-7))
+fLocsPred <- cbind(xx1, xx2)
+
+ygpVals <- randomLHS(N,2)
+sdVals <- randomLHS(N,2)
+fOutput <- cbind(w1,w2)
+
+ndp=dim(fLocs)[1]
+numX <- dim(fLocs)[2]
+
+w <- fOutput
+
+#generate m z1 values between 0 and 2
+z1 <- randomLHS(m,1)
+z1 <- z1 * 2
+#generate m z2 values between 0 and 2
+z2 <- randomLHS(m,1)
+z2 <- z2 * 2
+z <- cbind(z1, z2)
+zLocs <- z
+
+gLocs <- cbind(fOutput, zLocs)
+
+#calcualting the outputs of the design for g_1 and g_2
+gOutput <- cbind(g_1(w[,1], w[,2], z[,1], z[,2]), g_2(w[,1], w[,2], z[,1], z[,2]))
+
+#z1* and z2* will be held constant at 1 so we can investigate on dimension
+#we add a little bit of noise to the values so ppgasp can execute
+zT1 <- rep(1, times = N)
+zT1 = zT1 + (runif(N)*(10^-7))
+zT2 <- rep(1, times = N)
+zT2 = zT2 + (runif(N)*(10^-7))
+zz <- cbind(zT1, zT2)
+zLocsPred <- zz
+
+#calculate the w1* and w2* values for the untested inputs
+ww1=f_1(xx1, xx2)
+ww2=f_2(xx1, xx2)
+ww <- cbind(ww1,ww2)
+
+#the true outputs for g1* and g2* are not needed for emulation but are useful for comparing predictions later so we calculate them now
+gOutputTest <- cbind(g_1(ww[,1], ww[,2], zz[,1], zz[,2]), g_2(ww[,1], ww[,2], zz[,1], zz[,2]))
+
+```
+
+Now that we have all of the data either imported or generated, we define our trend and kernel of choice. Once we have that, we call the buildModels and linkedEmulator functions to perform all of the calculations - including all calls of the PPE.
+
+```{r Linked Emulator}
+
+#specify trend and kernel of your choice
+trend = 'linear'
+kernel = "pow_exp"
+
+#building f and g models since they won't change each iteration
+models <- buildModels(fLocs, fOutput, gLocs, gOutput, trend, kernel)
+fModels <- models$fModels
+gModel <- models$gModel
+
+#call linked emulator
+lE <- linkedEmulator(fModels, gModel, fLocsPred, zLocsPred, trend, kernel)
+
+```
+
+This section below plots the correlated samples received from the linkedSampling function in the linkedEmulator function. The samples are the colorful lines, the predictive mean is shown in black, the credible interval given by the predictive variance is shown by the dashed black lines, and the true output is shown in blue.
+
+```{r Plotting}
+sigma2s <- diag(lE$vars[,,1])
+library(ggplot2)
+plotXs <- matrix(rep(fLocsPred[,1], times=100), nrow = N)
+plotRuns <- t(matrix(rep(1:100, times=N), ncol = N))
+df <- data.frame(x = as.vector(plotXs), y = as.vector(lE$samples[,,1]), runId = as.vector(plotRuns))
+g2 <- ggplot(df,aes(x = x, y = y)) + geom_line(aes(color=factor(runId)))
+df2 <- data.frame(x = fLocsPred[,1], mu = lE$means[,1], lb = lE$means[,1] - 1.96*sqrt(sigma2s), ub = lE$means[,1] + 1.96*sqrt(sigma2s), trueVals = gOutputTest[,1])
+g2 <- g2 + geom_line(data = df2, aes(x = x, y = mu), lwd=1)
+g2 <- g2 + geom_line(data = df2, aes(x = x, y = lb), lwd=1, linetype = "dashed")
+g2 <- g2 + geom_line(data = df2, aes(x = x, y = ub), lwd=1, linetype = "dashed")
+g2 <- g2 + geom_line(data = df2, aes(x = x, y = trueVals), lwd=1, color = "blue")
+g2 <- g2 + theme(legend.position = "none")
+g2
+
+
+sigma2s <- diag(lE$vars[,,2])
+df <- data.frame(x = as.vector(plotXs), y = as.vector(lE$samples[,,2]), runId = as.vector(plotRuns))
+g3 <- ggplot(df,aes(x = x, y = y)) + geom_line(aes(color=factor(runId)))
+
+df2 <- data.frame(x = fLocsPred[,1], mu = lE$means[,2], lb = lE$means[,2] - 1.96*sqrt(sigma2s), ub = lE$means[,2] + 1.96*sqrt(sigma2s), trueVals = gOutputTest[,2])
+g3 <- g3 + geom_line(data = df2, aes(x = x, y = mu), lwd=1)
+g3 <- g3 + geom_line(data = df2, aes(x = x, y = lb), lwd=1, linetype = "dashed")
+g3 <- g3 + geom_line(data = df2, aes(x = x, y = ub), lwd=1, linetype = "dashed")
+g3 <- g3 + geom_line(data = df2, aes(x = x, y = trueVals), lwd=1, color = "blue")
+g3 <- g3 + theme(legend.position = "none")
+g3
+
+```
+
+Next, we are moving to an example using imported data with a very large number of outputs for the first layer. This data is from a two-permeability coupled fluid flow and mechanical deformation Terzaghi consolidation problem. \
+
+We will follow the same workflow but import the data instead of generating it. We will use PCA to determine our principal components before continuing with the problem as the PPE would struggle with such high-dimensional input. \
+
+Here we'll only evalute the mean and variance of the PPLE for pressue -- both are functions of space. Below we have leave-one-out experiments with visualize after.
+
+```{r Imported Data Example}
+
+library(R.matlab)
+path <- system.file("mat-files", package = "R.matlab") #To access filepath on Windows, head to
+#C:\Users\thisUser\AppData\Local\R\win-library\yourRVersion\R.matlab
+pathname <- file.path(path, "Fig7data.mat")
+data <- readMat(pathname)
+
+#load PCA function
+source("C:/Users/jl541227/Documents/ResearchPapers/Richards_Joey2/Richards_Joey/linkedEmulatorPackage/pcaFunctions.R")
+
+tVal = 100 # Number of design runs
+fInputs <- data$xxall
+zInputs <- data$yyall
+gall <- data$gall[,-1]
+gall <- gall*(10^-8)
+
+fall <- data$fall[,-1]
+nc <- ncol(gall)
+
+gOutput = gall[1:tVal,] # Pressure values
+fOutputAll = fall[1:tVal,] # Porosity Values
+gOutputTest = gall[((tVal+1):(nrow(gall))),] # Pressure values
+gOutputTest = t(gOutputTest)
+
+fLocs = fInputs[1:tVal,] # Input to the inside emulator (f)
+zLocs = zInputs[1:tVal,] # Input to the outside emulator (g)
+
+#Perform pca on the data to determine relevant inputs
+pcaValues <- pca_calculation(fOutputAll, 0)
+fOutput <- pcaValues$z 
+num_modes <- pcaValues$num_modes
+total_var_z <- pcaValues$total_var_z
+
+gLocs <- cbind(fOutput, zLocs)
+
+#building f and g models since they won't change each iteration
+models <- buildModels(fLocs, fOutput, gLocs, gOutput, trend, kernel)
+fModels <- models$fModels
+gModel <- models$gModel
+
+#Predicting each of the pressure curves from the testing inputs.
+tst <- (nrow(gall)-tVal) #number of LOO experiments to perform
+g <- ncol(gOutput) #number of output variables
+saveMus <- matrix(0, nrow = g, ncol = tst)
+saveSigs <- matrix(0, nrow = g, ncol = tst)
+
+trend = 'linear'
+kernel = "pow_exp"
+
+for (pp in 1:tst) { 
+  fLocsPred <- as.matrix(fInputs[tVal+pp,]) #testing data for inside emulator
+  fLocsPred <- t(fLocsPred) #testing data for inside emulator
+  zLocsPred <- as.matrix(zInputs[tVal+pp,]) #testing data for the outside emulator
+  zLocsPred <- t(zLocsPred) #testing data for the outside emulator
+  
+  print(pp)
+  Sys.sleep(0.001)
+  flush.console()
+  
+  etaVal = 0.000001
+  #call linked emulator
+  lE <- linkedEmulator(fModels, gModel, as.matrix(fLocsPred), as.matrix(zLocsPred), trend, kernel, etaVal)
+  saveMus[,pp] <- lE$means
+  saveSigs[,pp] <- lE$vars
+}
+
+```
+
+Visualization of the PPLE leave-one-out predictions for the Terzaghi cosolidation problem. \
+Note, the columns of upside down with depth below the surface going up in the figure.
+
+```{r Second Example Visualization}
+
+zz <- seq(0,100) #spatial coordiante -- column depth
+inds <- seq(1, 101)
+
+for (pp in 1:tst) {
+  df <- data.frame(x = zz, mu = as.vector(saveMus[inds,pp]), sigma2s = saveSigs[inds,pp], ub = saveMus[inds,pp]+1.96*sqrt(saveSigs[inds,pp]), lb = saveMus[inds,pp]-1.96*sqrt(saveSigs[inds,pp]), trueVals = gOutputTest[inds,pp])
+  g01 <- ggplot(df,aes(x = x, y = mu)) + geom_line(data = df, aes(x = x, y = mu), lwd=1, color = "black") + geom_line(data = df, aes(x = x, y = lb), lwd=1, linetype = "dashed") + geom_line(data = df, aes(x = x, y = ub), lwd=1, linetype = "dashed") + geom_line(data = df, aes(x = x, y = trueVals), lwd=1, color = "blue") + xlab("z, column depth (in)") + ylab("Pressure (psi *10^8)") + coord_flip()
+  print(g01)
+}
+
+
+```
+
+
+The 5 functions we loaded in at the top of the file are fPrediction, gPrediction, buildModels, linkedSampling, and linkedEmulator. More information about each of these functions is listed below: \
+
+*fPrediction(fLocs, fOutput, fLocsPred, kernel)* - performs mean and standard deviation predictions from a parallel partial emulator for the given untested inputs based on the provided PPE model for $f$. \
+**Inputs:** 
+
+fModel - A PPE model built using the RobustGaSP package. It contains an $n \times m$ matrix of design/training inputs and an $n \times d$ matrix of the corresponding outputs to the provided inputs (among other things) for the $f$ emulator. \
+        fLocsPred - $N \times m$ matrix of untested inputs. \
+        kernel - The name of the desired correlation function, defaults to Matern 5/2. \
+
+**Outputs:** 
+
+fPred - Predictive mean and standard deviation from the PPE ($\tilde{f_i}$) for the untested inputs provided (also includes upper and lower 95 values).  \
+
+~-~
+          
+*gPrediction(gModel, gLocsPred, trend, kernel)* - performs mean and standard deviation predictions from a parallel partial emulator for the given untested inputs based on the provided PPE model for $g$. \
+**Inputs:** 
+
+gModel - A PPE model built using the RobustGaSP package. It contains an $n \times (d+p)$ matrix (where $d$ is the number of outputs from $f$ and $p$ is the number of external inputs, $z$) of design/training inputs and an $n \times g$ matrix of the corresponding outputs to the provided inputs (among other things) for the $g$ emulator. \
+        gLocsPred - $N \times (d+p)$ matrix of untested inputs where $d$ is the number of outputs from $f$ and $p$ is the number of external inputs, $z$. \
+        trend - The name of the specified trend of the data. Could be linear or constant, defaults to linear. \
+        kernel - The name of the desired correlation function, defaults to Matern 5/2. \
+
+**Outputs:**
+
+gPred - Predictive mean and standard deviation from the PPE ($\tilde{g}$) for the untested inputs provided (also includes upper and lower 95 values). \
+          
+~-~
+
+*linkedSampling(fLocsPred, gLocsPred, muLs, sigma2Ls, fGamma, gGamma, N, gPred)* - performs linked sampling for the using the resulting values calculated from the parallel partial and linked emulators. This function is called inside of the separate linked emulator functions for the different cases with single or multiple outputs along with constant or linear trend. \
+**Inputs:** 
+
+fLocsPred - $N \times m$ matrix of untested inputs. \
+          gLocsPred - $N \times (d+p)$ matrix of untested inputs where $d$ is the number of outputs from $f$ and $p$ is the number of external inputs, $z$. \
+          muLs - The $N$ mean predictions from the linked emulator for the output of interest. \
+          sigma2Ls - The $N$ variance predictions from the linked emulator for the output of interest. \
+          fGamma - The range parameters of the inputs from the $f$ emulator. \
+          gGamma - The range parameters of the inputs from the $g$ emulator. \
+          N - The number of testing points. \
+          gPred - The predictive mean from the PPE for $g$. \
+
+**Outputs:** 
+
+A - The $N \times N$ covariance matrix. The predictive variance of the linked emulator is later extracted from its diagonal. \
+          samples - An $N \times 100$ matrix of correlated samples. \
+  
+~-~   
+
+*buildModels(fLocs, fOutput, gLocs, gOutput, trend, kernel)* - A function which takes in all of the design/training data and builds PPE models. An individual model ($f_i$) is constructed for each of the outputs in the $f$ layer to improve predictions. If the size of the given design is large enough, the function will switch to using the Nelder-Mead optimization method, as suggested by the RobustGaSP package.  \
+**Inputs:** 
+fLocs - An $n \times m$ matrix of design/training inputs for the $f$ emulator. \
+fOutput - $n \times d$ matrix of the corresponding outputs to the provided inputs. \
+gLocs - An $n \times (d+p)$ matrix of design/training inputs for the $g$ emulator. To give correct results, the external $z$ inputs must concatenated with the true outputs from the function/model that the $f$ layer emulates in the order: [fOutput, z]. \
+gOutput - An $n \times g$ matrix of the corresponding outputs to the provided inputs. \
+trend - The name of the specified trend of the data. Could be linear or constant, defaults to linear. \
+kernel - The name of the desired correlation function, defaults to Matern 5/2. \
+
+**Outputs:**
+outlist - List with 2 output components: \
+          fModels - A list of PPE models built using the RobustGaSP package. Each model contains an $n \times m$ matrix of design/training inputs and an $n \times d$ matrix of the corresponding outputs to the provided inputs (among other things) for the corresponding $f_i$ emulator. Each individual $f_i$ model can be accessed using fModels[[i]]. \
+          gModel - A PPE model built using the RobustGaSP package. It contains an $n \times (d+p)$ matrix (where $d$ is the number of outputs from $f$ and $p$ is the number of external inputs, $z$) of design/training inputs and an $n \times g$ matrix of the corresponding outputs to the provided inputs (among other things) for the $g$ emulator. \
+
+~-~
+
+*linkedEmulator(fModels, gModel, fLocsPred, zLocsPred, trend, kernel, eta)* - The function that takes in all of the PPE models and testing data and runs the whole linked emulator. It provides mean and variance predictions, as well as correlated samples. \
+**Inputs:** 
+
+fModels - A list of PPE models built using the RobustGaSP package. Each model contains an $n \times m$ matrix of design/training inputs and an $n \times d$ matrix of the corresponding outputs to the provided inputs (among other things) for the corresponding $f_i$ emulator. Each individual $f_i$ model can be accessed using fModels[[i]]. \
+gModel - A PPE model built using the RobustGaSP package. It contains an $n \times (d+p)$ matrix (where $d$ is the number of outputs from $f$ and $p$ is the number of external inputs, $z$) of design/training inputs and an $n \times g$ matrix of the corresponding outputs to the provided inputs (among other things) for the $g$ emulator. \
+        fLocsPred - $N \times m$ matrix of untested inputs for the first layer, $f$. \
+        zLocsPred - $N \times p$ matrix of untested inputs for the $g$ emulator. \
+        trend - The name of the specified trend, defaults to linear. \
+        kernel - The name of the desired corr. function, defaults to Matern 5/2. \
+        eta - Nugget term for regularizing R matrix during inversion, defaults to 1e-12. \
+
+**Outputs:** 
+
+outlist - List with 3 output components: \
+          means - The predictive mean(s) from the $\tilde{g}$ PPE. \
+          vars - The predictive variance(s) from the linked emulator. \
+          samples - An $N \times 100$ matrix of correlated samples. \
