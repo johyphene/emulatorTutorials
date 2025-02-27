@@ -1,0 +1,300 @@
+---
+title: "emulatorExamples"
+author: "Joey Lyon"
+date: "2025-02-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#install all of the following libraries to run this file
+# install.packages("RobustGaSP")
+# install.packages("animate")
+# install.packages("scatterplot3d")
+# install.packages("ggplot2")
+```
+
+To construct data for our emulation examples, we solve a viscous Burgers' equation with an additional cubic reaction term
+
+$\frac{\partial u}{\partial t} + \frac{\partial u^2}{\partial x} = \nu \frac{\partial^2 u}{\partial x^2}  + r u (a-u)(u-b)$ \
+
+with initial condition $u(x,0)=abs(sin(2 \pi k x)$ \
+and periodic boundary conditions $u(0,t)=u(1,t)$ \
+Let's set $a = 1$ and use as parameters for emulation some combination of $b,k,r$. \
+Here we will work with the two inputs $k,r$ and fix $b$. \
+The numerical scheme is a mid-time predictor-corrector, using a Davis Scheme for the Burgers' nonlinearity, and explicit differencing for the viscous term and the reaction term. The overall scheme is formally second-order accurate.
+
+```{r Advection}
+
+# 1D
+  # du/dt + (1/2) d(u^2)/dx = u(a-u)(u-b)
+  # 
+  #
+  # Davis scheme
+  # Look at boundary conditions.
+  # initial distrubance at origin, for short time.
+  #  
+  
+  # Parameters
+  n = 101   # grid size
+  dx = 1.0/n  
+  a = 1.0
+  nu = 0.01 ##b=0.5 k=1.5 react=2.0 
+  # B = c(0.25,0.5,0.75) 
+  # KK = c(1.5,1.0,0.5) 
+  # RR = c(1.0,2.0)
+  # for 2inputsonly
+  B = c(0.75) #fix B
+  KK = c(0.5, 1.0, 1.5, 2.0) 
+  RR = c(0.5,1.0,2.0)
+  count = 1
+  paramlength = length(B)*length(KK)*length(RR)
+  param <- matrix(0, nrow = paramlength, ncol = 3)
+  for (i in 1:length(B)) {
+    for (j in 1:length(KK)) {
+      for (h in 1:length(RR)) {
+        phere = c(B[i], KK[j], RR[h])
+        param[count,] = phere
+        count = count + 1
+      }
+    }
+  }
+  
+  # size, plot interval
+  x = seq(0, 1, length.out = n)
+  nplotstep = 20 # plot interval
+  
+  # Outer loop, restarts.
+  uwavex = matrix(0, nrow = paramlength, ncol = n)
+  ntrial = paramlength
+  invwaveu = matrix(0, nrow = paramlength, ncol = n)
+  integral1 = matrix(0, nrow = paramlength, ncol = 1)
+  waves = matrix(0, nrow = 205, ncol = n) 
+  
+  for (ploop in 1:ntrial) {
+    k = param[ploop,2]
+    b = param[ploop,1]
+    react = param[ploop,3]
+    
+    u = matrix(0, nrow = n, ncol = 1)    
+    us = matrix(0, nrow = n, ncol = 1)
+    
+    du = matrix(0, nrow = n, ncol = 1) 
+    uleft = matrix(0, nrow = n, ncol = 1) 
+    uright = matrix(0, nrow = n, ncol = 1)
+    for (i  in 1:n) {
+      u[i] = abs(sin(2*pi*k*x[i]))
+    }
+    
+    #   timestep  explicit for viscous term being conservative
+   maxspeed = max(1,max(a,b))
+    dt = 0.25*dx*dx/nu 
+    dt2 = 0.5*dt
+    time = 0.0 
+    nstep = 0
+    
+    # for each parameter set, a time loop
+    maximumtime = 0.5 
+    while(time < maximumtime) {
+      nstep = nstep + 1
+      timep = time + dt 
+      if (timep > maximumtime) {
+        dt = maximumtime - time
+        timep = time + dt
+      }
+      time = timep
+      
+      #slopes
+      for (i in 2:(n-1)) {
+        dup = u[i+1] - u[i]
+        dum = u[i] - u[i-1]
+        du[i] = 0.5*(sign(dup)+sign(dum))*min(2*abs(dup),2*abs(dum),0.5*(abs(dup+dum)))
+      }
+      du[1] = du[n-1]     
+      du[n] = du[2]
+      # mid-time predictor
+      
+      for (i in 2:(n-1)) {
+        us[i] = u[i]-(dt2/(dx))*u[i]*du[i] + nu*(dt2/(dx*dx))*(u[i+1]-2.0*u[i]+u[i-1]) + react*(dt2)*(u[i]*(a-u[i])*(u[i]-b))
+      }
+      # Periodic boundary conditions 
+      us[1] = us[n-1]     
+      us[n] = us[2]
+      
+      # Left and Right Riemann states...note indexing is based on cell center
+      for (i in 1:n) {
+        uleft[i] = u[i] - 0.5*dx*du[i]
+        uright[i] = u[i] + 0.5*dx*du[i]
+      }
+      speed = matrix(1, nrow = n, ncol = 1)
+      for (i in 1:(n-1)) {
+        speed[i] = max(abs(us[i]),abs(u[i+1]))
+      }
+      speed[n]= speed[1]
+      
+      # Conservative update (Rusanov flux)
+      for (i in 2:(n-1)) {
+        fluxp = 0.5*(uright[i]^2 + uleft[i+1]^2)/2 - (speed[i]/2)*(uleft[i+1]-uright[i])
+        fluxm = 0.5*(uright[i-1]^2 + uleft[i]^2)/2 - (speed[i-1]/2)*(uleft[i]-uright[i-1])
+        u[i] = u[i]-(dt/dx)*(fluxp-fluxm) + nu*(dt2/(dx*dx))*(us[i+1]-2.0*us[i]+us[i-1]) + react*(dt)*(us[i]*(a-us[i])*(us[i]-b))
+      }
+      if(ploop == 1) {
+        waves[nstep,] = t(u)
+      }
+      
+      # Periodic boundary conditions 
+      u[1] = u[n-1]    
+      u[n] = u[2]
+    
+  }
+    # set up output files for each ploop
+       ut = t(u)
+       invwaveu[ploop,] = ut
+       integrand1 = u^2
+       integral1[ploop,1] = sqrt(sum(integrand1*dx))
+    
+    
+  }
+  
+  #movie(Mov)
+  
+  write.table(param, file = "advectparam.txt", sep = "\t",
+              row.names = F, col.names = F)
+  write.table(invwaveu, file = "advectu.txt", sep = "\t",
+              row.names = F, col.names = F)
+  write.table(integral1, file = "advectintegral.txt", sep = "\t",
+              row.names = F, col.names = F)
+  
+  #initializing window for visualizing wave propagation
+  # library(animate)
+  # device <- animate$new(450, 300)
+  # attach(device)  # overrides the 'base' primitives
+
+```
+
+This next code chunk generates a movie, if you want to see the waves propagate. Uncomment lines 169-171 and 180-191.
+
+```{r Movie}
+
+
+# u <- waves[1,]
+# id <- "line-1"   # a line needs only 1 ID (as the entire line is considered as one unit)
+# plot(x, u, id = id, type = 'l')
+# 
+# for (n in 2:nstep) {
+#   new_u <- waves[n,]
+#   plot(x, new_u, id = id, type = 'l')
+#   Sys.sleep(0.02)   # about 50 frames per second
+# }
+# 
+# off()
+# detach(device)  # restore the 'base' primitives
+
+```
+
+So this advection code generates a .txt file advectparam, containing a 3-vector of input parameter, an advectu.txt file which is the output $u(x,\cdot)$, for all x's, at each time, and a file advectintegral.txt, which calculates the integral of u at the final time, $\int u(x,t_{final}) dx$.  
+Now to the business of emulation.  In R, the script ppgasp in the RobustGaSP library creates the emulator (for either scalar or vector output). The function ppgasp constructs the emulator. The function predict.ppgasp evaluates the prediction. 
+
+```{r Integral Emulate}
+
+library(RobustGaSP)
+  #emulate the integral from the Burgers-reaction above
+  #reaction term = r*u*(1-u)*(u-b)
+  # params contains the b, the frequency k of IC, and a r
+  
+  setwd("C:/Users/jl541227/Documents/MATLAB/advectionStuff") #we will want to figure out a default working directory for folks to use
+  intdatain <- read.table("advectintegral.txt", quote = "\"", comment.char = "")
+  pdatain <- read.table("advectparam.txt", quote = "\"", comment.char = "")
+  
+  ##2D emulation only
+  pdatain[,1] <- NULL #removing column 1 since B is fixed
+  
+  nparams = length(pdatain[,1])
+  indices = sample(1:nparams, replace = FALSE)
+  
+  trainset = intdatain[indices[1:nparams-1],]
+  trainparam = pdatain[indices[1:nparams-1],]
+  testset = intdatain[indices[nparams],]
+  testparam = pdatain[indices[nparams],]
+  
+  #call PPE
+  intmodel = ppgasp(design = as.matrix(trainparam), response = as.matrix(trainset))
+  
+  predint = predict.ppgasp(intmodel, testparam)
+  intprediction = predint$mean
+  intprediction
+  
+  testset 
+  
+  percenterr = 100*(testset-intprediction)/testset
+  percenterr
+  
+  ###a scatterplot of the original data, the training data, and the scalar output integral in 2 dimensions (the 2D input parameters)
+  library(scatterplot3d)
+  plotData <- cbind(c(trainparam[,1], testparam[,1], testparam[,1]), c(trainparam[,2], testparam[,2], testparam[,2]), c(trainset, testset, intprediction))
+  shapes <- c(rep(1, times = length(trainset)), rep(5, times = length(testset)), rep(8, times = length(intprediction)))
+  colors <- c(rep("blue", times = length(trainset)), rep("black", times = length(testset)), rep("green", times = length(intprediction)))
+scatterplot3d(plotData[,1:3], pch = shapes, color = colors, angle = 60,
+              grid=TRUE, box=FALSE,
+              xlab = "KK",
+              ylab = "RR",
+              zlab = "Integral of u")
+
+```
+
+You may have to look carefully to see any discrepancy in the predicted value. \
+
+The code does calculate the error between the predicted value of the integral and the actual value calculated in the simulator. \
+
+Now to the Parallel Partial Emulator. Same structure as the scalar emulation. Note that the training data -- the u's -- are written as long row vectors. You might want to look at the example file in the ppgasp release.
+
+```{r advectEmulate}
+
+# library(RobustGaSP)
+  #emulate velocity u in Burgers-reaction advection.m
+  #reaction term = r*u*(1-u)*(u-b)
+  #params contains the b, the frequency k of IC, and a r
+  
+  setwd("C:/Users/jl541227/Documents/MATLAB/advectionStuff")
+#datasets
+  udatain <- read.table("advectu.txt", quote = "\"", comment.char = "")
+  pdatain <- read.table("advectparam.txt", quote = "\"", comment.char = "")
+  
+  #size of inputs
+  nx = length(udatain[1,])
+  nparams = length(pdatain[,1])
+  #mix up input indices
+  indices = sample(1:nparams, replace = FALSE)
+  
+  #select training data a 1 test data input/output
+  trainset = udatain[indices[1:nparams-1],]
+  ##2D emulation only
+  trainparam = pdatain[indices[1:nparams-1],(2:3)]
+  testset = udatain[indices[nparams],]
+  testparam = pdatain[indices[nparams],(2:3)]
+  
+  #call PPE
+  umodel = ppgasp(design = trainparam, response = trainset)
+  
+  predu = predict.ppgasp(umodel, testparam)
+  uprediction = predu$mean
+  
+  #L2 error
+  err1 = (testset-uprediction)
+  absdiff = abs(err1^2)
+  sizeerr = sqrt(sum(absdiff*(1/nx)))
+  sizeerr
+  
+  library(ggplot2)
+  #plot prediction (red) and simulator output (blue)
+  df <- data.frame(x = 1:length(udatain[1,]), y = t(testset), pred = t(uprediction), err = t(err1*(1/nx)))
+  colnames(df) <- c("x", "y", "pred", "err")
+  g1 <- ggplot(df,aes(x = x, y = y)) + geom_line(lwd=1, color = "blue")
+  g1 <- g1 + geom_line(data = df, aes(x = x, y = pred), lwd=1, linetype = "dashed", color = "red") + xlab("Index") + ylab("u")
+  g1
+  g2 <- ggplot(df,aes(x = x, y = err)) + geom_line(data = df, aes(x = x, y = err), lwd=1, color = "blue") + xlab("Index") + ylab("Error")
+  g2
+
+```
+
+There is a difference between the predictor and the simulator output, but it is small for many of the parameter inputs.  If you want to push the emulator a bit more, use the 3 parameter inputs in the advection code and run this emulator script (change lines 264-267).
