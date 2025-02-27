@@ -1,0 +1,1 @@
+The files in this folder are for a tutorial on how to used linked emulators with both generated and imported data. You will need to manually import the .mat file into the R.matlab files as noted in the comment by that line of code.
